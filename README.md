@@ -1,190 +1,136 @@
-# Pico FIDO2
+# Pico FIDO2 - Waveshare RP2350-Zero Edition
 
-This project transforms your Raspberry RP235x or ESP32 microcontroller into an integrated FIDO Passkey **and** OpenPGP smartcard, functioning like a standard USB Passkey for authentication and as a smartcard for cryptographic operations.
+An enterprise-grade, open-source hardware security key transforming the **Raspberry Pi RP2350** (specifically the ultra-compact **Waveshare RP2350-Zero**) into an integrated **FIDO2 / WebAuthn Passkey Authenticator**, **OATH TOTP/HOTP Token Generator**, and **OpenPGP Smartcard**.
 
-This is a fork of the last community edition version of the pico-fido2 firmware, from December 9th 2025, that was available on https://github.com/polhenarejos/pico-fido2 before that repository was deleted and replaced by something else.
+This repository is a hardened, feature-enhanced fork of [librekeys/pico-fido2](https://github.com/librekeys/pico-fido2), fully ported and optimized for the **Waveshare RP2350-Zero** with native WS2812 RGB LED signaling, user presence sliding-window authorization, and seamless companion client integration.
 
 ---
 
-## Supported platforms
+## Target Hardware Specifications
 
-| | RP2040 | RP2350 | ESP32-S2 | ESP32-S3 |
-|---|---|---|---|---|
-| CPU | 2x Cortex-M0+ | 2x Cortex-M33 | 1x Xtensa | 2x Xtensa |
-| Core pinning | Yes  | Yes | No  | Yes |
-| RTOS | No (Pico SDK) | No (Pico SDK) | FreeRTOS | FreeRTOS |
-| MCU ID | `0` | `1` | `2` | `2` |
+| Component | Specification |
+|---|---|
+| **MCU** | Raspberry Pi RP2350A (Dual-core ARM Cortex-M33 @ 150 MHz, ARMv8-M with Security Extensions) |
+| **Board** | Waveshare RP2350-Zero (`PICO_BOARD=waveshare_rp2350_zero`) |
+| **Flash Memory** | 4 MB Quad-SPI NOR Flash (`0x400000` bytes) |
+| **Physical Button** | Onboard `BOOT` button connected to `QSPI_SS` (used for physical User Presence / touch confirmation) |
+| **Status LED** | Onboard WS2812 Addressable RGB LED connected to **GPIO 16** |
+| **USB Architecture** | Full-Speed USB Composite Device (Interfaces: CTAPHID, Keyboard HID, CCID Smartcard, WinUSB WebCCID) |
 
-### Security
+---
 
-Currently most secure features are supported and implemented only for RP2350.
+## Key Improvements & What Changed
 
-| | RP2350 | RP2040 | ESP32-S2 | ESP32-S3 |
-|---|---|---|---|---|
-| Secure Boot | Full (boot key hash, CRIT1 flags, debug disable, glitch detector) | No HW support | No (`// TODO`) | No (`// TODO`) |
-| Secure Lock | Yes (key invalidation, page locking) | No | No | No |
-| MKEK in OTP/eFuse | Yes (OTP rows with ECC, chaff, page locking) | No (plaintext flash) | Yes (eFuse `BLK_KEY3`, write-locked) | Yes (eFuse `BLK_KEY3`, write-locked) |
-| Device key in OTP/eFuse | Yes (OTP + chaff + migration) | No | Yes (eFuse `BLK_KEY4`) | Yes (eFuse `BLK_KEY4`) |
-| `cmd_secure` APDU | Available | Not available | Available | Available |
-| Firmware signing | Yes (`pico_sign_binary`) | No | No | No |
-| Rollback protection | Yes | No | No | No |
-| HW crypto | SHA-256	| No | SHA-256 + AES-GCM + ECDSA/ECDH | SHA-256 + AES-GCM + ECDSA/ECDH |
+### 1. Native WS2812 RGB LED Engine & Color Calibration
+* **Correct Byte Ordering (`urgb_u32`)**: Upstream firmware used GRB bit packing which swapped red and green on Waveshare boards. We recalibrated color encoding to native `(R << 16) | (G << 8) | B`.
+* **Gentle Green Idle Heartbeat**: Configured a relaxed 300 ms ON / 4700 ms OFF green pulse when the dongle is mounted and idle.
+* **Multi-State Visual Feedback**:
+  * **Standby / Mounted**: Gentle Green Heartbeat (300ms ON / 4700ms OFF).
+  * **User Presence Required**: Rapid Yellow Blink (200ms ON / 200ms OFF).
+  * **TOTP Sequence A (Even 30s epoch)**: Purple Blink (200ms ON / 200ms OFF).
+  * **TOTP Sequence B (Odd 30s epoch)**: Orange Blink (200ms ON / 200ms OFF).
+  * **Processing**: Blue Flash.
+  * **Success Confirmation**: Steady Green (1000ms).
+  * **Error / Timeout**: Fast Red Flash (1500ms).
 
-## Features
+### 2. OATH / TOTP Sliding User Presence Window
+* **Single-Touch Continuous Monitoring**: In upstream firmware, accounts flagged with `touch_required` would either block terminal watch dashboards or fail with `TAG_TOUCH_RESPONSE`.
+* We implemented an intelligent **35-second sliding user presence window** (`oath_user_present_time_limit`) in `src/fido/oath.c`. Touching the physical `BOOT` button once authorizes the session, and live dashboard pollers (`INS_CALCULATE_ALL`) automatically refresh the window for uninterrupted live code display. Exiting watch mode immediately revokes user presence.
 
-Pico FIDO2 includes the following features:
+### 3. Custom APDU `INS_SET_LED` (`0xA6`)
+* Added a dedicated OATH APDU (`CLA=0x00, INS=0xA6`) allowing companion tools to set active TOTP sequence indicators (`P1=1` for Purple / Sequence A, `P1=2` for Orange / Sequence B) and cleanly restore idle green (`P1=0`).
 
-### FIDO2 / U2F / WebAuthn
+### 4. Compiler-Level APDU State Hardening
+* In `pico-keys-sdk/src/usb/usb.c`, GCC `-Os` optimization previously discarded TOTP mode retention checks when APDU executions finished. We introduced `volatile` state checking to prevent the compiler from overwriting active sequence blinks.
 
-- CTAP 2.1 / CTAP 1
-- WebAuthn
-- U2F
-- HMAC-Secret extension
-- CredProtect extension
-- User presence enforcement through physical button
-- User verification with PIN
-- Discoverable credentials (resident keys)
-- Credential management
-- ECDSA and EDDSA authentication
-- Support for SECP256R1, SECP384R1, SECP521R1, SECP256K1 and Ed25519 curves
-- App registration and login
-- Device selection
-- Support for vendor configuration
-- Backup with 24 words
-- Secure lock to protect the device from flash dumps
-- Permissions support (MC, GA, CM, ACFG, LBW)
-- Authenticator configuration
-- minPinLength extension
-- Self attestation
-- Enterprise attestation
-- credBlobs extension
-- largeBlobKey extension
-- Large blobs support (2048 bytes max)
-- OATH (based on YKOATH protocol specification)
-- TOTP / HOTP
-- Yubikey One Time Password
-- Challenge-response generation
-- Emulated keyboard interface
-- Button press generates an OTP that is directly typed
-- Yubico YKMAN compatible
-- Nitrokey nitropy and nitroapp compatible
-- Secure Boot and Secure Lock in RP2350 and ESP32-S3 MCUs
-- One Time Programming to store the master key that encrypts all resident keys and seeds.
-- Rescue interface to allow recovery of the device if it becomes unresponsive or undetectable.
-- LED customization with Pico Commissioner.
+### 5. Automated USB Bootloader Reboot
+* Built-in support for software-triggered reboot into the RP2350 USB Mass Storage bootloader (`reset_usb_boot(0, 0)`) via the onboard `rescue` applet (`CLA=0x80, INS=0x1F, P1=0x01`).
+
+---
+
+## Features Overview
+
+### FIDO2 / WebAuthn / Passkeys
+* **CTAP 2.1 & CTAP 1 (U2F)**: Full support for Google, Apple, Microsoft, and GitHub passkeys.
+* **Physical Touch Confirmation**: User presence enforced via the onboard `BOOT` button.
+* **Hardware Cryptography**: Hardware-accelerated SHA-256 and P-256 (SECP256R1), SECP384R1, SECP521R1, SECP256K1, and Ed25519 curves.
+* **Discoverable Credentials**: Resident key support with PIN protection (`clientPin`, `minPinLength`).
+* **Extensions**: `hmac-secret` (Bitwarden, KeePassXC), `credProtect`, `largeBlobKey`.
+
+### OATH (TOTP / HOTP)
+* Yubico YKOATH compliant protocol.
+* Up to 255 TOTP / HOTP credentials.
+* Configurable period (e.g. 30s, 60s), digits (6 or 8), and hash algorithms (SHA-1, SHA-256, SHA-512).
+* Physical touch requirement flag per credential.
+* Compatible with the dedicated companion client [oolalabravo/rp2350-totp](https://github.com/oolalabravo/rp2350-totp) and standard `ykman`.
 
 ### OpenPGP Smartcard
-
-- OpenPGP card specification v3.4
-- 3 key slots (Signature, Encryption, Authentication)
-- RSA (2048, 3072, 4096), Ed25519, Curve25519, ECDSA (NIST P-256, P-384, P-521)
-- Key generation on device
-- Key import/export
-- PIN and Admin PIN protection
-- Reset and Unblock functions
-- Works with GnuPG, SSH, S/MIME, and compatible tools
-- CCID over USB
-- Compatible with major OS (Linux, Windows, macOS)
-- Touch button for user presence confirmation (optional)
-- Open source
+* OpenPGP Card Specification v3.4.
+* 3 Key Slots (Signature, Encryption, Authentication) supporting RSA up to 4096-bit and ECC curves (Ed25519, Curve25519, NIST P-256/384/521).
+* Compatible with `gpg`, SSH (`gpg-agent`), and Git commit signing.
 
 ---
 
-## Security Considerations
+## Quick Start: Flashing Prebuilt Firmware
 
-Microcontrollers RP2350 and ESP32-S3 are designed to support secure environments when Secure Boot is enabled, and optionally, Secure Lock. These features allow a master key encryption key (MKEK) to be stored in a one-time programmable (OTP) memory region, which is inaccessible from outside secure code. This master key is then used to encrypt all private and secret keys on the device, protecting sensitive data from potential flash memory dumps.
+You do not need to install toolchains or compile code. A precompiled binary is included directly in this repository:
 
-**However**, the RP2040 microcontroller lacks this level of security hardware, meaning that it cannot provide the same protection. Data stored on its flash memory, including private or master keys, can be easily accessed or dumped, as encryption of the master key itself is not feasible. Consequently, if an RP2040 device is stolen, any stored private or secret keys may be exposed.
+1. Download [`release/pico_fido2_waveshare_rp2350_zero.uf2`](release/pico_fido2_waveshare_rp2350_zero.uf2).
+2. Press and hold the **BOOT** button on the Waveshare RP2350-Zero board while plugging it into your computer's USB port.
+3. A mass storage drive named **`RP2350`** will appear in your file manager.
+4. Drag and drop `pico_fido2_waveshare_rp2350_zero.uf2` into the `RP2350` drive.
+5. The device will automatically flash, disconnect, and reboot.
+6. The onboard LED will pulse **Green** (300ms pulse every 5 seconds) indicating the authenticator is ready!
 
 ---
 
-## Build for Raspberry Pico
+## Building From Source
 
-Before building, ensure you have installed the toolchain for the Pico and that the Pico SDK is properly located on your drive.
+### Prerequisites
+* **ARM GNU Toolchain**: GCC 14 or 15+ (`arm-none-eabi-gcc`).
+* **CMake**: 3.20 or newer.
+* **Ninja** or **Make**.
+* **Pico SDK**: Version 2.1.0 or newer.
 
-```
-git clone https://github.com/youruser/pico-fido2
-git submodule update --init --recursive
-cd pico-fido2
-mkdir build
-cd build
-PICO_SDK_PATH=/path/to/pico-sdk cmake .. -DPICO_BOARD=board_type -DUSB_VID=0x1D50 -DUSB_PID=0x619B
-make
-```
+### Compilation Steps
 
-Note that `PICO_BOARD`, `USB_VID` and `USB_PID` are optional. If not provided, `pico` board and VID/PID `1D50:619B` will be used.
+1. **Clone with Submodules**:
+   ```bash
+   git clone --recursive https://github.com/oolalabravo/pico-fido2.git
+   cd pico-fido2
+   ```
 
-Additionally, you can pass the `VIDPID=value` parameter to build the firmware with a known VID/PID. The supported values are:
+2. **Configure with CMake**:
+   ```bash
+   # Set PICO_SDK_PATH if not exported globally
+   cmake -B build -G Ninja \
+     -DPICO_BOARD=waveshare_rp2350_zero \
+     -DPICO_PLATFORM=rp2350-arm-s \
+     -DCMAKE_BUILD_TYPE=Release
+   ```
 
-- `NitroHSM`
-- `NitroFIDO2`
-- `NitroStart`
-- `NitroPro`
-- `Nitro3`
-- `Yubikey5`
-- `YubikeyNeo`
-- `YubiHSM`
-- `Gnuk`
-- `GnuPG`
+3. **Build the Firmware**:
+   ```bash
+   ninja -C build
+   ```
 
-You can use whatever VID/PID for your own personal use. **But remember that you are not authorized to distribute the binary with a VID/PID that you do not own.**
-The VID/PID `1D50:619B` is provided to the project by [OpenMoko](https://wiki.openmoko.org/wiki/USB_Product_IDs). It can only be used for builds distributed under a free and open source license.
+4. The compiled output `build/pico_fido2.uf2` is generated and ready to flash.
 
-After running `make`, the binary file `pico_fido2.uf2` will be generated. To load this onto your Pico board:
+---
 
-1. Put the Pico board into loading mode by holding the `BOOTSEL` button while plugging it in.
-2. Copy the `pico_fido2.uf2` file to the new USB mass storage device that appears.
-3. Once the file is copied, the Pico mass storage device will automatically disconnect, and the Pico board will reset with the new firmware.
-4. A blinking LED will indicate that the device is ready to work.
+## Companion TOTP Management Client
 
-To configure your device you can use the [picoforge desktop application ](https://github.com/librekeys/picoforge).
+For managing 2FA/TOTP credentials on this security key, use the dedicated companion client:
 
-## Build for ESP32
+👉 **[oolalabravo/rp2350-totp](https://github.com/oolalabravo/rp2350-totp)**
 
-Replace
-- `ESP_PRODUCT` with your SoC's name: e.g. `esp32s2` or `esp32s3`
-- `ESP_NAME` with it's full name: `ESP32-S2` or `ESP32-S3`
+* Direct WinUSB transport (driverless, immune to Windows Code 31 smartcard bug).
+* Live continuous watch mode with single-touch upfront authorization.
+* Synchronized hardware LED blinking (Purple / Orange) indicating code validity.
+* QR code / `otpauth://` import and full credential management.
 
-Install ESP-IDF and toolchain
-
-```bash
-git clone --recursive https://github.com/espressif/esp-idf.git -b v5.5 --depth=1
-cd esp-idf
-./install.sh ESP_PRODUCT
-. ./export.sh
-cd ..
-```
-
-Then, you can build with:
-```bash
-idf.py set-target ESP_PRODUCT
-idf.py all
-cd build
-esptool.py --chip ESP_NAME merge_bin -o pico_fido_esp32.bin @flash_args
-```
-
-The binary file `pico_fido_esp32.bin` will be generated. To load this onto your board:
-
-1. Put the board into loading mode by holding the `BOOT` button while plugging it in.
-2. For Windows users, install drivers with [this guide](https://github.com/espressif/esp-win-usb-drivers#documentation)
-3. Go to https://espressif.github.io/esptool-js/
-4. Click on Connect and choose the board
-5. Choose the `pico_fido_esp32.bin` file
-6. Set Flash Address=0x0000
-7. Click Program
-8. Press RST/Reset button on the board. A blinking LED will indicate that the device is ready to work.
-
-To configure your device you can use the [picoforge desktop application ](https://github.com/librekeys/picoforge).
-
-
-## Drivers
-
-Pico FIDO2 uses the `HID` driver for FIDO and `CCID` for OpenPGP, both present in all major operating systems. It should be detected by all OS and browser/applications just like normal USB FIDO keys and smartcards.
+---
 
 ## License
 
-This project is released under the GNU Affero General Public License v3 (AGPLv3).
-A copy of the AGPLv3 license is available in the `LICENSE` file.
-
-## Credits
-This project uses libraries and portion of code from other projects that are detailed in the `LICENSE` file.
+This project is licensed under the **GNU Affero General Public License v3 (AGPLv3)**. See the [LICENSE](LICENSE) file for complete details.

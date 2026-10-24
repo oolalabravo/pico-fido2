@@ -61,6 +61,12 @@ else()
     message(STATUS "OATH Application: \t\t disabled")
 endif()
 
+
+option(ENABLE_OATH_TOUCH_ALWAYS "Require touch for all OATH/TOTP calculations" OFF)
+if(ENABLE_OATH_TOUCH_ALWAYS)
+    add_definitions(-DENABLE_OATH_TOUCH_ALWAYS=1)
+    message(STATUS "OATH Touch Always: 		 enabled")
+endif()
 option(ENABLE_OTP_APP "Enable/disable OTP application" ON)
 if(ENABLE_OTP_APP)
     add_definitions(-DENABLE_OTP_APP=1)
